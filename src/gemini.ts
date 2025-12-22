@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 
 export type GeminiResult = {
-	responseText: string;
+	eventBlocks: string[];
 	sessionId?: string;
-	toolLogText?: string;
 };
 
 type GeminiRunOptions = {
@@ -12,6 +11,16 @@ type GeminiRunOptions = {
 };
 
 type StreamEvent = Record<string, unknown>;
+type EventBlock =
+	| { type: "message"; content: string }
+	| {
+			type: "tool";
+			toolId?: string;
+			toolName?: string;
+			parameters?: unknown;
+			result?: { status?: unknown; output?: unknown };
+	  }
+	| { type: "event"; eventType: string; payload: StreamEvent };
 
 export async function runGemini(
 	options: GeminiRunOptions,
@@ -31,7 +40,6 @@ export async function runGemini(
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		const events: StreamEvent[] = [];
-		const toolEvents: StreamEvent[] = [];
 		let sessionId: string | undefined;
 		let stdoutBuffer = "";
 		let stderrBuffer = "";
@@ -48,9 +56,6 @@ export async function runGemini(
 					return;
 				}
 				events.push(parsed);
-				if (isToolEvent(parsed)) {
-					toolEvents.push(parsed);
-				}
 				if (!sessionId) {
 					const maybeSessionId = extractSessionId(parsed);
 					if (maybeSessionId) {
@@ -71,9 +76,6 @@ export async function runGemini(
 					return;
 				}
 				events.push(parsed);
-				if (isToolEvent(parsed)) {
-					toolEvents.push(parsed);
-				}
 				if (!sessionId) {
 					const maybeSessionId = extractSessionId(parsed);
 					if (maybeSessionId) {
@@ -91,14 +93,8 @@ export async function runGemini(
 				return;
 			}
 
-			const responseText = extractResponseText(events);
-			if (!responseText) {
-				reject(new Error("Gemini CLI returned no response text."));
-				return;
-			}
-
-			const toolLogText = formatToolLog(toolEvents);
-			resolve({ responseText, sessionId, toolLogText });
+			const eventBlocks = formatEventBlocks(events);
+			resolve({ eventBlocks, sessionId });
 		});
 
 		if (child.stdin) {
@@ -139,57 +135,205 @@ function extractSessionId(event: StreamEvent): string | undefined {
 	return undefined;
 }
 
-function extractResponseText(events: StreamEvent[]): string {
-	for (let index = events.length - 1; index >= 0; index -= 1) {
-		const text = pickResponseText(events[index]);
-		if (text) {
-			return text;
+function formatEventBlocks(events: StreamEvent[]): string[] {
+	const blocks: EventBlock[] = [];
+	let pendingMessage = "";
+	const pendingToolUses = new Map<
+		string,
+		{ toolName?: string; parameters?: unknown }
+	>();
+
+	for (const event of events) {
+		if (isInitEvent(event) || isResultEvent(event)) {
+			continue;
 		}
+		if (isUserMessageEvent(event)) {
+			continue;
+		}
+
+		if (isMessageEvent(event)) {
+			const content = extractMessageContent(event);
+			if (content) {
+				const isDelta = event.delta === true;
+				if (!isDelta && pendingMessage) {
+					blocks.push({ type: "message", content: pendingMessage });
+					pendingMessage = content;
+				} else {
+					pendingMessage += content;
+				}
+			}
+			continue;
+		}
+
+		if (pendingMessage) {
+			blocks.push({ type: "message", content: pendingMessage });
+			pendingMessage = "";
+		}
+
+		if (event.type === "tool_use") {
+			const toolId = extractToolId(event);
+			if (toolId) {
+				pendingToolUses.set(toolId, {
+					toolName: extractToolName(event),
+					parameters: event.parameters,
+				});
+			} else {
+				blocks.push({
+					type: "tool",
+					toolName: extractToolName(event),
+					parameters: event.parameters,
+				});
+			}
+			continue;
+		}
+
+		if (event.type === "tool_result") {
+			const toolId = extractToolId(event);
+			const result = {
+				status: event.status,
+				output: event.output,
+			};
+			if (toolId && pendingToolUses.has(toolId)) {
+				const pending = pendingToolUses.get(toolId);
+				pendingToolUses.delete(toolId);
+				blocks.push({
+					type: "tool",
+					toolId,
+					toolName: pending?.toolName ?? extractToolName(event),
+					parameters: pending?.parameters,
+					result,
+				});
+			} else {
+				blocks.push({
+					type: "tool",
+					toolId,
+					toolName: extractToolName(event),
+					result,
+				});
+			}
+			continue;
+		}
+
+		blocks.push({
+			type: "event",
+			eventType: typeof event.type === "string" ? event.type : "event",
+			payload: event,
+		});
 	}
-	return "";
+
+	if (pendingMessage) {
+		blocks.push({ type: "message", content: pendingMessage });
+	}
+
+	for (const [toolId, pending] of pendingToolUses.entries()) {
+		blocks.push({
+			type: "tool",
+			toolId,
+			toolName: pending.toolName,
+			parameters: pending.parameters,
+		});
+	}
+
+	if (blocks.length === 0) {
+		return ["（表示するイベントはありません）"];
+	}
+
+	return blocks.map(formatBlock);
 }
 
-function isToolEvent(event: StreamEvent): boolean {
-	if (typeof event.type === "string" && event.type.includes("tool")) {
-		return true;
-	}
-	if ("tool" in event || "tool_name" in event || "toolName" in event) {
-		return true;
-	}
-	if ("tool_calls" in event || "toolCalls" in event) {
-		return true;
-	}
-	return false;
+function isInitEvent(event: StreamEvent): boolean {
+	return event.type === "init";
 }
 
-function formatToolLog(events: StreamEvent[]): string | undefined {
-	if (events.length === 0) {
-		return undefined;
-	}
-	return events.map((event) => JSON.stringify(event)).join("\n");
+function isResultEvent(event: StreamEvent): boolean {
+	return event.type === "result";
 }
 
-function pickResponseText(event: StreamEvent): string | null {
-	const response = event.response;
-	if (typeof response === "string" && response.trim().length > 0) {
-		return response;
+function isUserMessageEvent(event: StreamEvent): boolean {
+	const type = typeof event.type === "string" ? event.type : undefined;
+	if (type !== "message") {
+		return false;
+	}
+	const role = extractRole(event);
+	return role === "user";
+}
+
+function isMessageEvent(event: StreamEvent): boolean {
+	return event.type === "message";
+}
+
+function extractRole(event: StreamEvent): string | undefined {
+	if (typeof event.role === "string") {
+		return event.role;
 	}
 	if (
-		typeof response === "object" &&
-		response !== null &&
-		"text" in response &&
-		typeof (response as { text?: unknown }).text === "string"
+		typeof event.message === "object" &&
+		event.message !== null &&
+		"role" in event.message &&
+		typeof (event.message as { role?: unknown }).role === "string"
 	) {
-		const text = (response as { text: string }).text.trim();
-		if (text.length > 0) {
-			return text;
-		}
+		return (event.message as { role: string }).role;
 	}
-	if (typeof event.text === "string" && event.text.trim().length > 0) {
-		return event.text;
-	}
-	if (typeof event.content === "string" && event.content.trim().length > 0) {
+	return undefined;
+}
+
+function extractMessageContent(event: StreamEvent): string | undefined {
+	if (typeof event.content === "string") {
 		return event.content;
 	}
-	return null;
+	if (
+		typeof event.message === "object" &&
+		event.message !== null &&
+		"content" in event.message &&
+		typeof (event.message as { content?: unknown }).content === "string"
+	) {
+		return (event.message as { content: string }).content;
+	}
+	return undefined;
+}
+
+function extractToolId(event: StreamEvent): string | undefined {
+	if (typeof event.tool_id === "string") {
+		return event.tool_id;
+	}
+	if (typeof event.toolId === "string") {
+		return event.toolId;
+	}
+	return undefined;
+}
+
+function extractToolName(event: StreamEvent): string | undefined {
+	if (typeof event.tool_name === "string") {
+		return event.tool_name;
+	}
+	if (typeof event.toolName === "string") {
+		return event.toolName;
+	}
+	if (
+		typeof event.tool === "object" &&
+		event.tool !== null &&
+		"name" in event.tool &&
+		typeof (event.tool as { name?: unknown }).name === "string"
+	) {
+		return (event.tool as { name: string }).name;
+	}
+	return undefined;
+}
+
+function formatBlock(block: EventBlock): string {
+	if (block.type === "message") {
+		return block.content;
+	}
+	if (block.type === "tool") {
+		const toolName = block.toolName ?? "unknown_tool";
+		const payload = {
+			tool: toolName,
+			tool_id: block.toolId,
+			parameters: block.parameters ?? null,
+			result: block.result ?? null,
+		};
+		return `[tool]\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
+	}
+	const header = block.eventType ? `[${block.eventType}]` : "[event]";
+	return `${header}\n\`\`\`json\n${JSON.stringify(block.payload, null, 2)}\n\`\`\``;
 }

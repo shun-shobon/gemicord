@@ -1,4 +1,4 @@
-import { Client } from "discord.js";
+import { AttachmentBuilder, Client } from "discord.js";
 import { runGemini } from "./gemini.ts";
 import { createSessionStore } from "./session-store.ts";
 
@@ -65,11 +65,22 @@ client.on("messageCreate", async (message) => {
 			resumeSessionId,
 		});
 		const sessionIdToStore = result.sessionId ?? resumeSessionId;
-		const fullResponse = appendToolLog(result.responseText, result.toolLogText);
-		const chunks = splitMessage(fullResponse, maxDiscordMessageLength);
+		const chunks = packEventBlocks(result.eventBlocks, maxDiscordMessageLength);
 		const sentMessages = [];
 
-		for (const chunk of chunks) {
+		for (const [index, chunk] of chunks.entries()) {
+			if (chunk.length > maxDiscordMessageLength) {
+				const attachment = new AttachmentBuilder(Buffer.from(chunk, "utf8"), {
+					name: `gemini-event-${index + 1}.txt`,
+				});
+				const sent = await message.reply({
+					content:
+						"イベントが長いため、内容をファイルとして送信します。",
+					files: [attachment],
+				});
+				sentMessages.push(sent);
+				continue;
+			}
 			const sent = await message.reply(chunk);
 			sentMessages.push(sent);
 		}
@@ -102,33 +113,38 @@ function stripBotMention(content: string, botId: string): string {
 	return content.replace(mentionPattern, " ");
 }
 
-function splitMessage(text: string, limit: number): string[] {
-	if (text.length <= limit) {
-		return [text];
+function packEventBlocks(blocks: string[], limit: number): string[] {
+	if (blocks.length === 0) {
+		return ["（表示するイベントはありません）"];
 	}
 
 	const chunks: string[] = [];
-	let remaining = text;
+	let current = "";
 
-	while (remaining.length > limit) {
-		let splitIndex = remaining.lastIndexOf("\n", limit);
-		if (splitIndex <= 0) {
-			splitIndex = limit;
+	for (const block of blocks) {
+		if (block.length > limit) {
+			if (current) {
+				chunks.push(current);
+				current = "";
+			}
+			chunks.push(block);
+			continue;
 		}
-		chunks.push(remaining.slice(0, splitIndex));
-		remaining = remaining.slice(splitIndex).trimStart();
+
+		const separator = current ? "\n\n" : "";
+		if ((current + separator + block).length > limit) {
+			if (current) {
+				chunks.push(current);
+			}
+			current = block;
+		} else {
+			current = current + separator + block;
+		}
 	}
 
-	if (remaining.length > 0) {
-		chunks.push(remaining);
+	if (current) {
+		chunks.push(current);
 	}
 
 	return chunks;
-}
-
-function appendToolLog(responseText: string, toolLogText?: string): string {
-	if (!toolLogText) {
-		return responseText;
-	}
-	return `${responseText}\n\n---\nTool Use Log:\n\`\`\`jsonl\n${toolLogText}\n\`\`\``;
 }
