@@ -1,0 +1,27 @@
+{
+	"name": "gemicord",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "",
+	"license": "MIT",
+	"private": true,
+	"packageManager": "pnpm@10.26.0",
+	"main": "index.js",
+	"keywords": [],
+	"scripts": {
+		"dev": "node --strip-types --watch ./src/index.ts",
+		"start": "node --strip-types ./src/index.ts"
+	},
+	"dependencies": {
+		"discord.js": "14.25.1"
+	},
+	"devDependencies": {
+		"@shun-shobon/style-guide": "1.3.0",
+		"@tsconfig/node-lts": "24.0.0",
+		"@tsconfig/node-ts": "23.6.2",
+		"@tsconfig/strictest": "2.0.8",
+		"eslint": "9.39.2",
+		"prettier": "3.7.4",
+		"typescript": "5.9.3"
+	}
+}
