@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 export type GeminiResult = {
 	responseText: string;
 	sessionId?: string;
+	toolLogText?: string;
 };
 
 type GeminiRunOptions = {
@@ -17,14 +18,20 @@ export async function runGemini(
 ): Promise<GeminiResult> {
 	const { prompt, resumeSessionId } = options;
 
-	const args = ["--output-format", "stream-json", "--yolo"];
+	const args = ["--output-format", "stream-json"];
 	if (resumeSessionId) {
 		args.push("--resume", resumeSessionId);
 	}
 
 	return await new Promise<GeminiResult>((resolve, reject) => {
-		const child = spawn("gemini", args, { stdio: ["pipe", "pipe", "pipe"] });
+		const geminiCwd =
+			process.env["GEMINI_CLI_CWD"]?.trim() || process.cwd();
+		const child = spawn("gemini", args, {
+			cwd: geminiCwd,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
 		const events: StreamEvent[] = [];
+		const toolEvents: StreamEvent[] = [];
 		let sessionId: string | undefined;
 		let stdoutBuffer = "";
 		let stderrBuffer = "";
@@ -41,6 +48,9 @@ export async function runGemini(
 					return;
 				}
 				events.push(parsed);
+				if (isToolEvent(parsed)) {
+					toolEvents.push(parsed);
+				}
 				if (!sessionId) {
 					const maybeSessionId = extractSessionId(parsed);
 					if (maybeSessionId) {
@@ -61,6 +71,9 @@ export async function runGemini(
 					return;
 				}
 				events.push(parsed);
+				if (isToolEvent(parsed)) {
+					toolEvents.push(parsed);
+				}
 				if (!sessionId) {
 					const maybeSessionId = extractSessionId(parsed);
 					if (maybeSessionId) {
@@ -84,7 +97,8 @@ export async function runGemini(
 				return;
 			}
 
-			resolve({ responseText, sessionId });
+			const toolLogText = formatToolLog(toolEvents);
+			resolve({ responseText, sessionId, toolLogText });
 		});
 
 		if (child.stdin) {
@@ -133,6 +147,26 @@ function extractResponseText(events: StreamEvent[]): string {
 		}
 	}
 	return "";
+}
+
+function isToolEvent(event: StreamEvent): boolean {
+	if (typeof event.type === "string" && event.type.includes("tool")) {
+		return true;
+	}
+	if ("tool" in event || "tool_name" in event || "toolName" in event) {
+		return true;
+	}
+	if ("tool_calls" in event || "toolCalls" in event) {
+		return true;
+	}
+	return false;
+}
+
+function formatToolLog(events: StreamEvent[]): string | undefined {
+	if (events.length === 0) {
+		return undefined;
+	}
+	return events.map((event) => JSON.stringify(event)).join("\n");
 }
 
 function pickResponseText(event: StreamEvent): string | null {

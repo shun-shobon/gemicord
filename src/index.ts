@@ -28,7 +28,7 @@ client.on("messageCreate", async (message) => {
 
 	const referencedMessageId = message.reference?.messageId;
 	const resumeSessionId = referencedMessageId
-		? sessionStore.get(referencedMessageId)
+		? sessionStore.getSessionIdByMessageId(referencedMessageId)
 		: undefined;
 	const isMentioned = message.mentions.has(botUser, {
 		ignoreEveryone: true,
@@ -65,7 +65,8 @@ client.on("messageCreate", async (message) => {
 			resumeSessionId,
 		});
 		const sessionIdToStore = result.sessionId ?? resumeSessionId;
-		const chunks = splitMessage(result.responseText, maxDiscordMessageLength);
+		const fullResponse = appendToolLog(result.responseText, result.toolLogText);
+		const chunks = splitMessage(fullResponse, maxDiscordMessageLength);
 		const sentMessages = [];
 
 		for (const chunk of chunks) {
@@ -74,8 +75,12 @@ client.on("messageCreate", async (message) => {
 		}
 
 		if (sessionIdToStore) {
-			for (const sent of sentMessages) {
-				await sessionStore.set(sent.id, sessionIdToStore);
+			const latestMessage = sentMessages.at(-1);
+			if (latestMessage) {
+				await sessionStore.setLatestMessageId(
+					sessionIdToStore,
+					latestMessage.id,
+				);
 			}
 		}
 	} catch (error) {
@@ -119,4 +124,11 @@ function splitMessage(text: string, limit: number): string[] {
 	}
 
 	return chunks;
+}
+
+function appendToolLog(responseText: string, toolLogText?: string): string {
+	if (!toolLogText) {
+		return responseText;
+	}
+	return `${responseText}\n\n---\nTool Use Log:\n\`\`\`jsonl\n${toolLogText}\n\`\`\``;
 }
