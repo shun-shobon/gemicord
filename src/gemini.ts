@@ -35,11 +35,10 @@ export async function runGemini(
 	if (options.resumeSessionId) {
 		args.push("--resume", options.resumeSessionId);
 	}
-	args.push(options.prompt);
 
 	const child = spawn("gemini", args, {
 		cwd: options.cwd,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: ["pipe", "pipe", "pipe"],
 	});
 
 	const toolNamesById = new Map<string, string>();
@@ -101,6 +100,7 @@ export async function runGemini(
 	});
 
 	rl.on("line", (line) => {
+		console.log("line", line);
 		const trimmed = line.trim();
 		if (!trimmed) {
 			return;
@@ -118,8 +118,13 @@ export async function runGemini(
 		stderrBuffer += chunk;
 	});
 
+	if (child.stdin) {
+		child.stdin.write(options.prompt);
+		child.stdin.end();
+	}
+
 	const [exitCode] = (await once(child, "close")) as [number | null];
-	await once(rl, "close");
+	rl.close();
 
 	flushAssistant();
 
