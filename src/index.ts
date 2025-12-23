@@ -47,23 +47,35 @@ const sendGeminiResponse = async (
 	prompt: string,
 	resumeSessionId?: string,
 ): Promise<void> => {
-	const result = await runGemini({
-		prompt,
-		cwd: geminiWorkingDirectory,
-		...(resumeSessionId ? { resumeSessionId } : {}),
-	});
-	const output =
-		result.output.trim() || "（Gemini CLIの出力がありませんでした）";
-	const chunks = splitDiscordMessage(output, 2000);
-	let lastMessageId: string | undefined;
+	let typingInterval: NodeJS.Timeout | undefined;
+	try {
+		await message.channel.sendTyping();
+		typingInterval = setInterval(() => {
+			void message.channel.sendTyping();
+		}, 9000);
 
-	for (const chunk of chunks) {
-		const sent = await message.channel.send(chunk);
-		lastMessageId = sent.id;
-	}
+		const result = await runGemini({
+			prompt,
+			cwd: geminiWorkingDirectory,
+			...(resumeSessionId ? { resumeSessionId } : {}),
+		});
+		const output =
+			result.output.trim() || "（Gemini CLIの出力がありませんでした）";
+		const chunks = splitDiscordMessage(output, 2000);
+		let lastMessageId: string | undefined;
 
-	if (result.sessionId && lastMessageId) {
-		await sessionStore.set(result.sessionId, lastMessageId);
+		for (const chunk of chunks) {
+			const sent = await message.channel.send(chunk);
+			lastMessageId = sent.id;
+		}
+
+		if (result.sessionId && lastMessageId) {
+			await sessionStore.set(result.sessionId, lastMessageId);
+		}
+	} finally {
+		if (typingInterval) {
+			clearInterval(typingInterval);
+		}
 	}
 };
 

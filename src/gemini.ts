@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
 
-import { formatToolResult, formatToolUse } from "./format.ts";
+import { formatToolResult } from "./format.ts";
 
 interface GeminiRunOptions {
 	prompt: string;
@@ -64,22 +64,19 @@ export async function runGemini(
 				}
 				break;
 
-			case "tool_use": {
-				flushAssistant();
-				const toolName = event.tool_name ?? "unknown";
+			case "tool_use":
 				if (event.tool_id && event.tool_name) {
 					toolNamesById.set(event.tool_id, event.tool_name);
 				}
-				outputParts.push(formatToolUse(toolName, event.parameters));
 				break;
-			}
+
 			case "tool_result": {
 				flushAssistant();
 				const toolName = event.tool_id
 					? toolNamesById.get(event.tool_id)
 					: undefined;
 				outputParts.push(
-					formatToolResult(toolName, event.status, event.output, event.tool_id),
+					formatToolResult(toolName, event.status, event.tool_id),
 				);
 				break;
 			}
@@ -100,7 +97,6 @@ export async function runGemini(
 	});
 
 	rl.on("line", (line) => {
-		console.log("line", line);
 		const trimmed = line.trim();
 		if (!trimmed) {
 			return;
@@ -118,10 +114,8 @@ export async function runGemini(
 		stderrBuffer += chunk;
 	});
 
-	if (child.stdin) {
-		child.stdin.write(options.prompt);
-		child.stdin.end();
-	}
+	child.stdin.write(options.prompt);
+	child.stdin.end();
 
 	const [exitCode] = (await once(child, "close")) as [number | null];
 	rl.close();

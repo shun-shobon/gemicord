@@ -44,22 +44,12 @@ export function splitDiscordMessage(text: string, limit = 2000): string[] {
 	return chunks;
 }
 
-export function formatToolUse(toolName: string, parameters: unknown): string {
-	const body = JSON.stringify(parameters ?? {}, null, 2);
-	return `**[tool_use]**: \`${toolName}\`\n\n\`\`\`json\n${body}\n\`\`\``;
-}
-
 export function formatToolResult(
 	toolName: string | undefined,
 	status: string | undefined,
-	output: unknown,
 	toolId: string | undefined,
 ): string {
-	const payload = {
-		tool: toolName ?? toolId ?? "unknown",
-		status: status ?? "unknown",
-		output: output ?? "",
-	};
-	const body = JSON.stringify(payload, null, 2);
-	return `**[tool_result]**: \`${payload.tool}\`\n\n\`\`\`json\n${body}\n\`\`\``;
+	const label = toolName ?? toolId ?? "unknown";
+	const normalizedStatus = status ?? "unknown";
+	return `**[tool_use]**: \`${label}\` (${normalizedStatus})`;
 }
