@@ -10,7 +10,12 @@
 	"keywords": [],
 	"scripts": {
 		"dev": "node --strip-types --watch ./src/index.ts",
-		"start": "node --strip-types ./src/index.ts"
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"lint": "eslint .",
+		"lint:fix": "eslint --fix .",
+		"start": "node --strip-types ./src/index.ts",
+		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
 		"discord.js": "14.25.1"
